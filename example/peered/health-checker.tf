@@ -1,3 +1,7 @@
+provider "template" {
+  version = "~> 1.0"
+}
+
 resource "heroku_app" "health" {
   name  = "${var.name}-health"
   space = "${heroku_space.default.name}"
@@ -10,8 +14,7 @@ resource "heroku_app" "health" {
   internal_routing = true
 
   config_vars {
-    HEALTH_CHECKER_PRIVATE_IP       = "${aws_instance.health_checker.private_ip}"
-    HEALTH_CHECKER_PRIVATE_DNS_NAME = "${aws_instance.health_checker.private_dns}"
+    HEALTH_CHECKER_DNS_NAME = "${aws_instance.health_checker.private_dns}"
   }
 }
 
@@ -22,7 +25,7 @@ resource "heroku_slug" "health" {
     web = "ruby server.rb"
   }
 
-  file_path = "slug.tgz"
+  file_path = "${var.health_app_slug_file_path}"
 }
 
 resource "heroku_app_release" "health" {
@@ -33,9 +36,39 @@ resource "heroku_app_release" "health" {
 resource "heroku_formation" "health" {
   app        = "${heroku_app.health.id}"
   type       = "web"
-  quantity   = 1
-  size       = "Private-S"
+  quantity   = "${var.health_app_count}"
+  size       = "${var.health_app_size}"
   depends_on = ["heroku_app_release.health"]
+}
+
+resource "aws_iam_role" "ecs_instance_role" {
+  name = "ecsInstanceRole"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2008-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_ec2_instance" {
+  role       = "${aws_iam_role.ecs_instance_role.id}"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+resource "aws_iam_instance_profile" "ecs_ec2_instance" {
+  name = "ecs-ec2-instance"
+  role = "${aws_iam_role.ecs_instance_role.name}"
 }
 
 resource "aws_key_pair" "health_checker" {
@@ -43,35 +76,35 @@ resource "aws_key_pair" "health_checker" {
   public_key = "${var.instance_public_key}"
 }
 
-data "aws_ami" "ubuntu" {
+data "aws_ami" "ecs_optimized" {
   most_recent = true
 
   filter {
     name   = "name"
-    values = ["bitnami-node-10.5.0-0-linux-ubuntu-16.04-x86_64-*"]
+    values = ["amzn-ami-2018.03.e-amazon-ecs-optimized"]
   }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-
-  owners = ["679593333241"] # Bitnami
 }
 
 resource "aws_instance" "health_checker" {
-  ami                         = "${data.aws_ami.ubuntu.id}"
+  ami                         = "${data.aws_ami.ecs_optimized.id}"
   instance_type               = "t2.micro"
   subnet_id                   = "${module.heroku_aws_vpc.public_subnet_id}"
   associate_public_ip_address = true
   key_name                    = "${aws_key_pair.health_checker.key_name}"
+  iam_instance_profile        = "${aws_iam_instance_profile.ecs_ec2_instance.name}"
 
   vpc_security_group_ids = [
-    "${aws_security_group.allow_ssh.id}",
+    # "${aws_security_group.allow_ssh.id}",
+    "${aws_security_group.health_checker_container.id}",
   ]
 
+  user_data = <<EOF
+#!/bin/bash
+echo ECS_CLUSTER=${aws_ecs_cluster.health_checker.name} >> /etc/ecs/ecs.config
+EOF
+
   tags {
-    Name = "HealthChecker"
+    Name = "health-checker-container"
   }
 }
 
@@ -86,11 +119,59 @@ resource "aws_security_group" "allow_ssh" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+resource "aws_security_group" "health_checker_container" {
+  name        = "health-checker-container"
+  description = "controls access to the Health Checker web app container"
+  vpc_id      = "${module.heroku_aws_vpc.id}"
+
+  ingress {
+    from_port = "${var.health_checker_app_port}"
+    to_port   = "${var.health_checker_app_port}"
+    protocol  = "tcp"
+
+    cidr_blocks = [
+      "${module.heroku_aws_vpc.cidr}",
+      "${data.heroku_space_peering_info.default.dyno_cidr_blocks}",
+    ]
+  }
 
   egress {
+    protocol    = "-1"
     from_port   = 0
     to_port     = 0
-    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+resource "aws_ecs_cluster" "health_checker" {
+  name = "health-checker-cluster"
+}
+
+data "template_file" "health_checker_container" {
+  template = "${file("health-checker-app/ecs-app.json.tpl")}"
+
+  vars {
+    app_image  = "${var.health_checker_app_image}"
+    aws_region = "${var.aws_region}"
+    app_port   = "${var.health_checker_app_port}"
+    logs_group = "${aws_cloudwatch_log_group.health_checker.name}"
+  }
+}
+
+resource "aws_ecs_task_definition" "health_checker" {
+  family                = "health-checker-app-task"
+  container_definitions = "${data.template_file.health_checker_container.rendered}"
+}
+
+resource "aws_ecs_service" "health_checker" {
+  name            = "health-checker-service"
+  cluster         = "${aws_ecs_cluster.health_checker.id}"
+  task_definition = "${aws_ecs_task_definition.health_checker.arn}"
+  desired_count   = "${var.health_checker_app_count}"
+}
+
+resource "aws_cloudwatch_log_group" "health_checker" {
+  name = "/ecs/health-checker-app"
 }

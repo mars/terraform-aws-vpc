@@ -6,7 +6,6 @@ provider "aws" {
 }
 
 provider "heroku" {
-  version = "~> 1.3"
   email   = "${var.heroku_email}"
   api_key = "${var.heroku_api_key}"
 }
@@ -61,8 +60,9 @@ resource "heroku_space_peering_connection_accepter" "accept" {
   vpc_peering_connection_id = "${aws_vpc_peering_connection.request.id}"
 }
 
-resource "aws_route" "internet_gateway" {
+resource "aws_route" "peered_private_space" {
   route_table_id            = "${module.heroku_aws_vpc.public_route_table_id}"
   destination_cidr_block    = "${data.heroku_space_peering_info.default.vpc_cidr}"
   vpc_peering_connection_id = "${aws_vpc_peering_connection.request.id}"
+  depends_on                = ["aws_vpc_peering_connection.request"]
 }

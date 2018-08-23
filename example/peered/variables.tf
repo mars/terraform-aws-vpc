@@ -1,4 +1,6 @@
-variable "name" {}
+variable "name" {
+  description = "Top-level name of configuration: lowercase, dash-separated"
+}
 
 variable "heroku_email" {}
 variable "heroku_api_key" {}
@@ -29,4 +31,36 @@ variable "aws_to_heroku_private_region" {
     "ap-northeast-1" = "tokyo"
     "us-east-1"      = "virginia"
   }
+}
+
+# Heroku app: "Health"
+variable "health_app_slug_file_path" {
+  description = "Heroku slug archive to release"
+  default     = "health-app/heroku-slug.tgz"
+}
+
+variable "health_app_count" {
+  description = "Heroku dyno quantity"
+  default     = 1
+}
+
+variable "health_app_size" {
+  description = "Heroku dyno size"
+  default     = "Private-S"
+}
+
+# AWS ECS/Docker app: "Health Checker"
+variable "health_checker_app_image" {
+  description = "Docker image to run in the ECS cluster"
+  default     = "tutum/hello-world:latest"
+}
+
+variable "health_checker_app_port" {
+  description = "Port exposed by the docker image to redirect traffic to"
+  default     = 80
+}
+
+variable "health_checker_app_count" {
+  description = "Number of docker containers to run"
+  default     = 1
 }
