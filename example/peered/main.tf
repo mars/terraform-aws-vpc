@@ -38,11 +38,6 @@ resource "heroku_space_inbound_ruleset" "default" {
     action = "allow"
     source = "0.0.0.0/0"
   }
-
-  rule {
-    action = "deny"
-    source = "${module.heroku_aws_vpc.private_static_outgoing_ip}/32"
-  }
 }
 
 data "heroku_space_peering_info" "default" {
